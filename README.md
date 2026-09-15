@@ -393,7 +393,7 @@ The error is *"GH006: Protected branch update failed for refs/heads/main — Cha
 
 ---
 
-## 🧗 Challenges Faced
+## Challenges Faced
 
 **1. Trivy action version tag didn't exist**
 
