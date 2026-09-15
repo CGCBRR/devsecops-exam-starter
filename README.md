@@ -69,7 +69,7 @@ docker stop macky-api && docker rm macky-api
 
 **Build completes successfully (13/13 stages):**
 
-![Docker build success](screenshots/03-docker-build.png)
+![Docker build success](https://github.com/CGCBRR/devsecops-exam-starter/blob/30f4e4ca3aa1268c72692b0fc1a5e8db16316e87/screenshots/03-docker-build.png.png)
 
 **Image size — 199 MB on disk / 49.1 MB content:**
 
