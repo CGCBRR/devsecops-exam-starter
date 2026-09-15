@@ -73,21 +73,21 @@ docker stop macky-api && docker rm macky-api
 
 **Image size — 199 MB on disk / 49.1 MB content:**
 
-![Docker image size](screenshots/04-docker-image-size.png)
+![Docker image size](https://github.com/CGCBRR/devsecops-exam-starter/blob/bb28a5e3f44c6c893abddbb3b9925ba3fc76315e/screenshots/04-docker-image-size.png.png)
 
 **Container starts and runs:**
 
-![Docker run](screenshots/05-docker-run.png)
+![Docker run](https://github.com/CGCBRR/devsecops-exam-starter/blob/bb28a5e3f44c6c893abddbb3b9925ba3fc76315e/screenshots/05-docker-run.png.png)
 
-![Container running](screenshots/06-container-running.png)
+![Container running](https://github.com/CGCBRR/devsecops-exam-starter/blob/bb28a5e3f44c6c893abddbb3b9925ba3fc76315e/screenshots/06-container-running.png.png)
 
 **Health endpoint returns 200 OK:**
 
-![Health endpoint](screenshots/01-health-endpoint.png)
+![Health endpoint](https://github.com/CGCBRR/devsecops-exam-starter/blob/bb28a5e3f44c6c893abddbb3b9925ba3fc76315e/screenshots/01-health-endpoint.png.png)
 
 **Container runs as non-root user `node` (UID 1000):**
 
-![Non-root user](screenshots/02-non-root-user.png)
+![Non-root user](https://github.com/CGCBRR/devsecops-exam-starter/blob/bb28a5e3f44c6c893abddbb3b9925ba3fc76315e/screenshots/02-non-root-user.png.png)
 
 ---
 
