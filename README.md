@@ -404,14 +404,6 @@ I had assumed GitHub Actions version tags always follow `@X.Y.Z`. They do not.
 
 **Takeaway:** Verify a version tag against the source before pinning it.
 
-### Branch protection blocked my own push
-
-After enabling branch protection, I could not push `docker-compose.yml` to `main`. The rule required a passing pull request, but `Security Scan (Trivy)` was failing by design.
-
-**Fix:** Cherry-picked the commit onto a branch, temporarily disabled the rule, pushed, then immediately re-enabled it.
-
-**Takeaway:** This is the rule functioning as intended. In a real team, the correct path would be to fix the failing scan (bump `lodash` to `^4.17.21`) and merge through a pull request. The bypass was acceptable only because this was a solo project.
-
 ### Non-root user could not read its own files
 
 The container crashed on startup with:
