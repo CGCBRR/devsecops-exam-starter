@@ -1,0 +1,36 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: macky-merch-api:latest
+    container_name: macky-api
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - macky-net
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: macky-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - macky-net
+    restart: unless-stopped
+
+networks:
+  macky-net:
+    driver: bridge
