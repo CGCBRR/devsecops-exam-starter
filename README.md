@@ -321,3 +321,81 @@ This demonstration captures the core DevSecOps principle: **security decisions s
 Because the scan runs on every push and PR, the deliberate vulnerability was caught at the **earliest possible moment** — not in production, not in a security review weeks later, but within seconds of opening the PR. The failing check then blocks the merge, forcing remediation before the code can land on `main`.
 
 **Remediation** (the fix a developer would take): update the version constraint to `"lodash": "^4.17.21"` and run `npm install` to update the lockfile. The next CI run passes cleanly.
+
+---
+
+## ✨ Bonus Features
+
+All three optional bonus features from the exam were implemented.
+
+### 1. Multi-Stage Build ✅
+
+The Dockerfile already uses a two-stage build (`builder` → `production`). Covered in detail under [Why a Multi-Stage Build?](#why-a-multi-stage-build).
+
+**Evidence of size savings:**
+
+![Docker image size](https://github.com/CGCBRR/devsecops-exam-starter/blob/0f73dbb56c393848694285376153d570f60da6d6/screenshots/04-docker-image-size.png)
+
+The final image is **49.1 MB of content** (199 MB uncompressed on disk) — smaller than a single-stage build would produce, because `jest`, `supertest`, and the rest of `devDependencies` never reach the runtime stage.
+
+### 2. Docker Compose with Redis ✅
+
+The [`docker-compose.yml`](docker-compose.yml) file spins up two services on a shared Docker network:
+
+| Service | Image | Purpose |
+|---------|-------|---------|
+| `api` | Built from local Dockerfile | The Node.js Express app |
+| `redis` | `redis:7-alpine` | Dummy database / cache |
+
+**Key configuration choices:**
+
+```yaml
+depends_on:
+  redis:
+    condition: service_healthy
+```
+The API container waits for Redis to pass its `redis-cli ping` health check before starting. This avoids race conditions where the app boots before its database is ready — a common issue in naive `depends_on` usage (which only waits for the container to *start*, not to be *ready*).
+
+```yaml
+networks:
+  - macky-net
+```
+Both services attach to a custom bridge network (`macky-net`), which is what allows Docker's internal DNS to resolve `redis` as a hostname from inside the API container.
+
+**Both containers running and healthy:**
+
+![Docker compose ps](https://github.com/CGCBRR/devsecops-exam-starter/blob/0f73dbb56c393848694285376153d570f60da6d6/screenshots/09-compose-ps.png)
+
+**Both containers attached to the same Docker network:**
+
+![Network proof](https://github.com/CGCBRR/devsecops-exam-starter/blob/0f73dbb56c393848694285376153d570f60da6d6/screenshots/10-network-proof.png)
+
+Command used:
+```bash
+docker network inspect devsecops-exam-starter_macky-net --format "{{range .Containers}}{{.Name}} {{end}}"
+# Output: macky-api macky-redis
+```
+
+> **Note on network naming:** Docker Compose prefixes network names with the project name (the folder name) by default. That's why the network is `devsecops-exam-starter_macky-net` rather than just `macky-net`.
+
+### 3. Branch Protection ✅
+
+A branch protection rule on `main` requires **both CI jobs to pass** before any pull request can be merged:
+
+- ✅ **Require a pull request before merging** — direct pushes are rejected
+- ✅ **Require status checks to pass before merging**
+  - `Build & Test` (GitHub Actions)
+  - `Security Scan (Trivy)` (GitHub Actions)
+- ✅ **Require branches to be up to date before merging**
+- ✅ **Do not allow bypassing the above settings** — applies to admins too
+
+![Branch protection rule](https://github.com/CGCBRR/devsecops-exam-starter/blob/0f73dbb56c393848694285376153d570f60da6d6/screenshots/11-branch-protection.png)
+![Branch protection rule](https://github.com/CGCBRR/devsecops-exam-starter/blob/0f73dbb56c393848694285376153d570f60da6d6/screenshots/11-2-branch-protection.png)
+
+**Direct push to `main` is rejected by GitHub:**
+
+![Failed push](https://github.com/CGCBRR/devsecops-exam-starter/blob/0f73dbb56c393848694285376153d570f60da6d6/screenshots/12-push-blocked.png)
+
+The error is *"GH006: Protected branch update failed for refs/heads/main — Changes must be made through a pull request"* — direct proof that the rule is active and enforced, not just cosmetic.
+
+**Why this matters:** Without this rule, a developer could `git push` a change to `main` while the security scan was still running, bypassing the gate entirely. Branch protection makes the pipeline's failure status **binding** rather than advisory.
