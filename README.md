@@ -130,13 +130,11 @@ CMD ["node", "server.js"]
 
 ### Why `node:20-alpine`?
 
-Three deliberate choices went into this base image:
+1. **`node:20` instead of `node:latest`** — Node 20 is an LTS release. Pinning the version ensures reproducible builds and avoids breakage when a new major version ships. `latest` is unpredictable in production and considered an anti-pattern in CI/CD.
 
-1. **`node:20` instead of `node:latest`** — Node 20 is a long-term-support (LTS) release. Pinning the version ensures reproducible builds and avoids silent breakage when a new major version ships. `latest` is unpredictable in production and is considered an anti-pattern in CI/CD.
+2. **`alpine` instead of the default Debian-based image** — Alpine ships with only ~5 MB of base OS, compared to ~120 MB for Debian. This reduces image size and **attack surface** — fewer packages means fewer potential CVEs.
 
-2. **`alpine` instead of the default Debian-based image** — Alpine Linux ships with only ~5 MB of base OS, compared to ~120 MB for Debian. This directly reduces the image size and, more importantly, the **attack surface** — fewer installed packages means fewer potential CVEs. Alpine's musl libc is also lighter than glibc for this workload.
-
-3. **Attacker's perspective** — If a malicious actor compromises the running container, they inherit an environment with almost no shell utilities (`bash`, `curl`, `wget` may not exist by default). This makes post-exploitation harder.
+3. **Attacker's perspective** — If the container is compromised, the attacker inherits an environment with almost no shell utilities (`bash`, `curl`, `wget` may not exist), making post-exploitation harder.
 
 ### Why a Multi-Stage Build?
 
@@ -147,7 +145,7 @@ The Dockerfile uses **two stages**:
 | `builder` | Install **all** dependencies (including `jest`, `supertest`) and prepare the app | Full `node_modules` |
 | `production` | Install **only** production dependencies and copy the app code | Minimal `node_modules` |
 
-**Result:** Development tooling (test runners, linters, etc.) never reaches the final image. This reduces size and eliminates dev-tooling vulnerabilities from the runtime.
+Development tooling never reaches the final image. This reduces size and eliminates dev-tooling vulnerabilities from the runtime.
 
 ### Why Run as a Non-Root User?
 
@@ -156,16 +154,14 @@ The final stage includes:
 USER node
 ```
 
-The official Node image ships with a built-in `node` user (UID 1000). Running as this user instead of `root` follows the **principle of least privilege**. If an attacker exploits the application (e.g., through a vulnerable dependency), they are confined to an unprivileged account and cannot:
+The official Node image ships with a built-in `node` user (UID 1000). Running as this user instead of `root` follows the **principle of least privilege**. If an attacker exploits the application, they are confined to an unprivileged account and cannot:
 
 - Modify system binaries
 - Install packages
 - Escalate to root inside the container
-- Access host files owned by root (if the container is compromised)
+- Access host files owned by root
 
-**Key subtlety:** `USER node` alone is not sufficient — the `COPY` instruction also needs `--chown=node:node` so that the non-root user owns the files it reads. Without this, the app can start as `node` but fail to read its own source code.
-
-Verification screenshot: see [Non-root user](#-setup-instructions) above.
+**Key subtlety:** `USER node` alone is not sufficient — the `COPY` instruction also needs `--chown=node:node`, otherwise the non-root user cannot read its own source files.
 
 ### What `.dockerignore` Accomplishes
 
@@ -188,22 +184,20 @@ README.md
 *.md
 ```
 
-**Impact measured:** Without `.dockerignore`, the build context included the full `node_modules` folder (~40 MB). With it, the context is **135 bytes** — a reduction of over 99%. This dramatically speeds up builds, especially in CI where context is transferred on every run.
+**Impact measured:** Without `.dockerignore`, the build context included the full `node_modules` folder (~40 MB). With it, the context is **135 bytes** — a 99% reduction. This speeds up builds, especially in CI.
 
 It also prevents accidental leakage of:
 - Local `.env` files (secrets)
 - Git history (which may contain past credentials)
-- Local `node_modules` (whose binaries are OS-specific and would break inside Alpine Linux)
+- Local `node_modules` (OS-specific binaries that break inside Alpine Linux)
 
 ---
 
 ## 🔄 CI/CD Pipeline
 
-Every push and pull request targeting `main` automatically runs a two-job GitHub Actions workflow defined in [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+Every push and pull request targeting `main` runs a two-job GitHub Actions workflow defined in [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
 ### Job 1: Build & Test (`build-and-test`)
-
-This job validates that the application is functional and the Dockerfile is correct before any security check runs:
 
 | Step | Purpose |
 |------|---------|
@@ -211,19 +205,18 @@ This job validates that the application is functional and the Dockerfile is corr
 | **Setup Node.js 20** | Uses `actions/setup-node@v5` with npm cache enabled |
 | **Install dependencies** | `npm ci` — deterministic install from `package-lock.json` |
 | **Run tests** | `npm test` — executes the Jest suite against `server.test.js` |
-| **Build Docker image** | `docker build` — proves the Dockerfile is valid and buildable |
+| **Build Docker image** | `docker build` — proves the Dockerfile is valid |
 
-> **Why `npm ci` instead of `npm install`?** `npm ci` reads `package-lock.json` exactly, produces identical installs across every machine, and fails fast if `package.json` and the lockfile drift apart. It's the standard for CI pipelines.
+> **Why `npm ci` instead of `npm install`?** `npm ci` reads `package-lock.json` exactly, produces identical installs across every machine, and fails fast if `package.json` and the lockfile drift.
 
 ### Job 2: Security Scan (`security-scan`)
 
-Runs **only after** `build-and-test` succeeds (`needs: build-and-test`). This is the "Sec" in DevSecOps — a security gate that runs on every change.
+Runs **only after** `build-and-test` succeeds (`needs: build-and-test`).
 
 ![CI summary — Build & Test passes, Security Scan fails on purpose](https://github.com/CGCBRR/devsecops-exam-starter/blob/4c88137398ba00883b4e7c905bb432b51a1d344d/screenshots/07-ci-summary.png.png)
 
-The summary above shows the intended behavior of this pipeline:
 - ✅ **Build & Test** — tests pass, Docker image builds
-- ❌ **Security Scan (Trivy)** — finds HIGH-severity CVEs and **blocks the pipeline**
+- ❌ **Security Scan (Trivy)** — finds HIGH-severity CVEs and blocks the pipeline
 
 ---
 
@@ -231,19 +224,19 @@ The summary above shows the intended behavior of this pipeline:
 
 ### Tool Choice: Trivy
 
-I chose [**Trivy**](https://github.com/aquasecurity/trivy) for dependency scanning. Here's why, compared to the alternatives:
+I chose [**Trivy**](https://github.com/aquasecurity/trivy) for dependency scanning:
 
-| Tool | Why I chose Trivy over it |
-|------|---------------------------|
-| `npm audit` | Only scans npm packages — misses OS-level CVEs inside the container image. Also only exits non-zero on `audit` level, not severity-specific. |
-| CodeQL | Excellent for static analysis of source code, but doesn't scan dependency manifests or container images. Better for finding bugs in *your* code, not in *your dependencies*. |
-| Snyk / Dependabot | Snyk requires an account and API token; Dependabot opens PRs but doesn't gate the current pipeline. Trivy is fully open-source, runs locally with no signup, and integrates cleanly into GitHub Actions. |
+| Tool | Why not |
+|------|---------|
+| `npm audit` | Only scans npm packages — misses OS-level CVEs inside the image. |
+| CodeQL | Static analysis of source code, not dependency manifests or container images. |
+| Snyk / Dependabot | Snyk requires an account and token; Dependabot opens PRs but doesn't gate the pipeline. Trivy is open-source, runs locally with no signup, and integrates cleanly into GitHub Actions. |
 
-**Trivy's advantages for this pipeline:**
-1. **Multi-target** — can scan filesystems, container images, IaC, and SBOMs with one tool
+**Trivy's advantages:**
+1. **Multi-target** — scans filesystems, container images, IaC, and SBOMs with one tool
 2. **SARIF output** — native integration with GitHub's Security tab
-3. **Configurable failure threshold** — `severity: 'HIGH,CRITICAL'` + `exit-code: '1'` means the build fails only for serious issues, not noise
-4. **Runs in ~10 seconds** — no noticeable pipeline slowdown
+3. **Configurable threshold** — `severity: 'HIGH,CRITICAL'` + `exit-code: '1'` fails only on serious issues
+4. **Fast** — runs in ~10 seconds
 
 ### Configuration
 
@@ -277,9 +270,9 @@ The scanner runs **twice** in the workflow:
     sarif_file: 'trivy-results.sarif'
 ```
 
-**The two-pass design matters:**
-- Pass 1 (**table + exit-code 1**) — provides a clear log AND fails the job when a HIGH/CRITICAL issue exists. This is what enforces the security gate.
-- Pass 2 (**SARIF + always()**) — runs even when Pass 1 fails, so the results still get uploaded to GitHub's Security tab for review. Without `if: always()`, the upload step would be skipped whenever the scan failed — which is exactly when you *most* want to see the report.
+**Two-pass design:**
+- Pass 1 (**table + exit-code 1**) — prints a clear log AND fails the job on HIGH/CRITICAL. This is the security gate.
+- Pass 2 (**SARIF + always()**) — uploads to GitHub's Security tab even when Pass 1 fails. Without `if: always()`, the report would be skipped exactly when it's most needed.
 
 ---
 
@@ -295,13 +288,13 @@ To prove the scanner works, I **deliberately introduced a known-vulnerable depen
 ```
 
 **Why `lodash@4.17.15`?**
-- It's pinned **exactly** (no `^`), so npm doesn't auto-upgrade to a patched version
-- It has **4 well-documented HIGH-severity CVEs** that Trivy reliably detects
-- `lodash` is a realistic, widely-used package — not an artificial test case
+- Pinned **exactly** (no `^`), so npm doesn't auto-upgrade to a patched version
+- Has **4 documented HIGH-severity CVEs** that Trivy reliably detects
+- A realistic, widely-used package — not an artificial test case
 
 ### What Trivy Found
 
-On the next push, the `Security Scan (Trivy)` job **failed** with exit code 1, and printed this table to the pipeline logs:
+On the next push, the `Security Scan (Trivy)` job **failed** with exit code 1 and printed this table:
 
 ![Trivy CVE table](https://github.com/CGCBRR/devsecops-exam-starter/blob/4c88137398ba00883b4e7c905bb432b51a1d344d/screenshots/08-trivy-cves.png.png)
 
@@ -316,31 +309,29 @@ On the next push, the `Security Scan (Trivy)` job **failed** with exit code 1, a
 
 ### Why This Matters — "Shift Left" Security
 
-This demonstration captures the core DevSecOps principle: **security decisions should happen before code reaches production.**
+This demonstrates the core DevSecOps principle: **security decisions should happen before code reaches production.**
 
-Because the scan runs on every push and PR, the deliberate vulnerability was caught at the **earliest possible moment** — not in production, not in a security review weeks later, but within seconds of opening the PR. The failing check then blocks the merge, forcing remediation before the code can land on `main`.
+Because the scan runs on every push and PR, the vulnerability was caught at the **earliest possible moment** — not in production, not weeks later in review, but within seconds. The failing check blocks the merge, forcing remediation before the code reaches `main`.
 
-**Remediation** (the fix a developer would take): update the version constraint to `"lodash": "^4.17.21"` and run `npm install` to update the lockfile. The next CI run passes cleanly.
+**Remediation:** update the constraint to `"lodash": "^4.17.21"` and run `npm install`. The next CI run passes cleanly.
 
 ---
 
 ## ✨ Bonus Features
 
-All three optional bonus features from the exam were implemented.
+All three optional bonus features were implemented.
 
 ### 1. Multi-Stage Build ✅
 
-The Dockerfile already uses a two-stage build (`builder` → `production`). Covered in detail under [Why a Multi-Stage Build?](#why-a-multi-stage-build).
-
-**Evidence of size savings:**
+The Dockerfile uses a two-stage build (`builder` → `production`). Covered under [Why a Multi-Stage Build?](#why-a-multi-stage-build).
 
 ![Docker image size](https://github.com/CGCBRR/devsecops-exam-starter/blob/0f73dbb56c393848694285376153d570f60da6d6/screenshots/04-docker-image-size.png)
 
-The final image is **49.1 MB of content** (199 MB uncompressed on disk) — smaller than a single-stage build would produce, because `jest`, `supertest`, and the rest of `devDependencies` never reach the runtime stage.
+The final image is **49.1 MB of content** — smaller than a single-stage build, because `jest`, `supertest`, and the rest of `devDependencies` never reach the runtime stage.
 
 ### 2. Docker Compose with Redis ✅
 
-The [`docker-compose.yml`](docker-compose.yml) file spins up two services on a shared Docker network:
+[`docker-compose.yml`](docker-compose.yml) spins up two services on a shared Docker network:
 
 | Service | Image | Purpose |
 |---------|-------|---------|
@@ -354,13 +345,13 @@ depends_on:
   redis:
     condition: service_healthy
 ```
-The API container waits for Redis to pass its `redis-cli ping` health check before starting. This avoids race conditions where the app boots before its database is ready — a common issue in naive `depends_on` usage (which only waits for the container to *start*, not to be *ready*).
+The API waits for Redis to pass its `redis-cli ping` health check before starting. This avoids race conditions where the app boots before its database is ready — a common issue with naive `depends_on` (which only waits for the container to *start*, not to be *ready*).
 
 ```yaml
 networks:
   - macky-net
 ```
-Both services attach to a custom bridge network (`macky-net`), which is what allows Docker's internal DNS to resolve `redis` as a hostname from inside the API container.
+Both services attach to a custom bridge network, which allows Docker's internal DNS to resolve `redis` as a hostname from inside the API container.
 
 **Both containers running and healthy:**
 
@@ -376,7 +367,7 @@ docker network inspect devsecops-exam-starter_macky-net --format "{{range .Conta
 # Output: macky-api macky-redis
 ```
 
-> **Note on network naming:** Docker Compose prefixes network names with the project name (the folder name) by default. That's why the network is `devsecops-exam-starter_macky-net` rather than just `macky-net`.
+> **Note on network naming:** Docker Compose prefixes network names with the project name (the folder name) by default. That's why the network is `devsecops-exam-starter_macky-net` rather than `macky-net`.
 
 ### 3. Branch Protection ✅
 
@@ -396,6 +387,38 @@ A branch protection rule on `main` requires **both CI jobs to pass** before any 
 
 ![Failed push](https://github.com/CGCBRR/devsecops-exam-starter/blob/0f73dbb56c393848694285376153d570f60da6d6/screenshots/12-push-blocked.png)
 
-The error is *"GH006: Protected branch update failed for refs/heads/main — Changes must be made through a pull request"* — direct proof that the rule is active and enforced, not just cosmetic.
+The error is *"GH006: Protected branch update failed for refs/heads/main — Changes must be made through a pull request."*
 
-**Why this matters:** Without this rule, a developer could `git push` a change to `main` while the security scan was still running, bypassing the gate entirely. Branch protection makes the pipeline's failure status **binding** rather than advisory.
+**Why this matters:** Without this rule, a developer could `git push` directly to `main` while the security scan was still running, bypassing the gate. Branch protection makes the pipeline's failure status **binding** rather than advisory.
+
+---
+
+## 🧗 Challenges Faced
+
+**1. Trivy action version tag didn't exist**
+
+My first CI run failed with `Unable to resolve action aquasecurity/trivy-action@0.28.0`. I assumed version tags always used `@X.Y.Z`, but that tag didn't exist.
+
+**Fix:** Switched to `@master`, which the action's own docs recommend.
+
+**Lesson:** Always verify a version tag against the source before pinning it.
+
+---
+
+**2. Branch protection blocked my own push**
+
+After enabling branch protection, I couldn't push `docker-compose.yml` to `main` — the rule required a passing PR, but `Security Scan (Trivy)` was failing on purpose.
+
+**Fix:** Cherry-picked the commit onto a branch, temporarily disabled the rule, pushed, then re-enabled it.
+
+**Lesson:** This is the rule working correctly — in a real team, you'd fix the failing scan and merge via PR.
+
+---
+
+**3. Non-root user couldn't read its own files**
+
+My container crashed with `EACCES: permission denied` even though `USER node` was set.
+
+**Fix:** `USER node` alone isn't enough — the `COPY` line also needs `--chown=node:node`. Without it, files stay owned by `root`.
+
+**Lesson:** Running as non-root is a two-part requirement: start as the user *and* own the files.
