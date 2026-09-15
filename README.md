@@ -194,3 +194,130 @@ It also prevents accidental leakage of:
 - Local `.env` files (secrets)
 - Git history (which may contain past credentials)
 - Local `node_modules` (whose binaries are OS-specific and would break inside Alpine Linux)
+
+---
+
+## 🔄 CI/CD Pipeline
+
+Every push and pull request targeting `main` automatically runs a two-job GitHub Actions workflow defined in [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+
+### Job 1: Build & Test (`build-and-test`)
+
+This job validates that the application is functional and the Dockerfile is correct before any security check runs:
+
+| Step | Purpose |
+|------|---------|
+| **Checkout code** | Pulls the repo into the runner (`actions/checkout@v5`) |
+| **Setup Node.js 20** | Uses `actions/setup-node@v5` with npm cache enabled |
+| **Install dependencies** | `npm ci` — deterministic install from `package-lock.json` |
+| **Run tests** | `npm test` — executes the Jest suite against `server.test.js` |
+| **Build Docker image** | `docker build` — proves the Dockerfile is valid and buildable |
+
+> **Why `npm ci` instead of `npm install`?** `npm ci` reads `package-lock.json` exactly, produces identical installs across every machine, and fails fast if `package.json` and the lockfile drift apart. It's the standard for CI pipelines.
+
+### Job 2: Security Scan (`security-scan`)
+
+Runs **only after** `build-and-test` succeeds (`needs: build-and-test`). This is the "Sec" in DevSecOps — a security gate that runs on every change.
+
+![CI summary — Build & Test passes, Security Scan fails on purpose](https://github.com/CGCBRR/devsecops-exam-starter/blob/4c88137398ba00883b4e7c905bb432b51a1d344d/screenshots/07-ci-summary.png.png)
+
+The summary above shows the intended behavior of this pipeline:
+- ✅ **Build & Test** — tests pass, Docker image builds
+- ❌ **Security Scan (Trivy)** — finds HIGH-severity CVEs and **blocks the pipeline**
+
+---
+
+## 🛡️ Security Scanning
+
+### Tool Choice: Trivy
+
+I chose [**Trivy**](https://github.com/aquasecurity/trivy) for dependency scanning. Here's why, compared to the alternatives:
+
+| Tool | Why I chose Trivy over it |
+|------|---------------------------|
+| `npm audit` | Only scans npm packages — misses OS-level CVEs inside the container image. Also only exits non-zero on `audit` level, not severity-specific. |
+| CodeQL | Excellent for static analysis of source code, but doesn't scan dependency manifests or container images. Better for finding bugs in *your* code, not in *your dependencies*. |
+| Snyk / Dependabot | Snyk requires an account and API token; Dependabot opens PRs but doesn't gate the current pipeline. Trivy is fully open-source, runs locally with no signup, and integrates cleanly into GitHub Actions. |
+
+**Trivy's advantages for this pipeline:**
+1. **Multi-target** — can scan filesystems, container images, IaC, and SBOMs with one tool
+2. **SARIF output** — native integration with GitHub's Security tab
+3. **Configurable failure threshold** — `severity: 'HIGH,CRITICAL'` + `exit-code: '1'` means the build fails only for serious issues, not noise
+4. **Runs in ~10 seconds** — no noticeable pipeline slowdown
+
+### Configuration
+
+The scanner runs **twice** in the workflow:
+
+```yaml
+- name: Run Trivy vulnerability scanner
+  uses: aquasecurity/trivy-action@master
+  with:
+    scan-type: 'fs'              # Scan the filesystem
+    scan-ref: '.'                # From repo root
+    format: 'table'              # Print human-readable table in logs
+    severity: 'HIGH,CRITICAL'    # Only fail on serious issues
+    exit-code: '1'               # Fail the job if any are found
+    ignore-unfixed: true         # Skip CVEs without an available fix
+
+- name: Run Trivy scanner (SARIF for GitHub Security tab)
+  if: always()                   # Run even if the previous step failed
+  uses: aquasecurity/trivy-action@master
+  with:
+    scan-type: 'fs'
+    scan-ref: '.'
+    format: 'sarif'              # Machine-readable format
+    output: 'trivy-results.sarif'
+    severity: 'HIGH,CRITICAL'
+
+- name: Upload Trivy results to GitHub Security tab
+  if: always()
+  uses: github/codeql-action/upload-sarif@v3
+  with:
+    sarif_file: 'trivy-results.sarif'
+```
+
+**The two-pass design matters:**
+- Pass 1 (**table + exit-code 1**) — provides a clear log AND fails the job when a HIGH/CRITICAL issue exists. This is what enforces the security gate.
+- Pass 2 (**SARIF + always()**) — runs even when Pass 1 fails, so the results still get uploaded to GitHub's Security tab for review. Without `if: always()`, the upload step would be skipped whenever the scan failed — which is exactly when you *most* want to see the report.
+
+---
+
+## 🚨 Vulnerability Demonstration
+
+To prove the scanner works, I **deliberately introduced a known-vulnerable dependency** into `package.json`:
+
+```json
+"dependencies": {
+  "express": "^4.18.2",
+  "lodash": "4.17.15"
+}
+```
+
+**Why `lodash@4.17.15`?**
+- It's pinned **exactly** (no `^`), so npm doesn't auto-upgrade to a patched version
+- It has **4 well-documented HIGH-severity CVEs** that Trivy reliably detects
+- `lodash` is a realistic, widely-used package — not an artificial test case
+
+### What Trivy Found
+
+On the next push, the `Security Scan (Trivy)` job **failed** with exit code 1, and printed this table to the pipeline logs:
+
+![Trivy CVE table](https://github.com/CGCBRR/devsecops-exam-starter/blob/4c88137398ba00883b4e7c905bb432b51a1d344d/screenshots/08-trivy-cves.png.png)
+
+| CVE | Severity | Installed | Fixed In | Description |
+|-----|----------|-----------|----------|-------------|
+| **CVE-2020-8203** | HIGH | 4.17.15 | 4.17.19 | Prototype pollution in `zipObjectDeep` |
+| **CVE-2021-23337** | HIGH | 4.17.15 | 4.17.21 | Command injection via template |
+| **CVE-2026-4800** | HIGH | 4.17.15 | 4.18.0 | Arbitrary code execution via untrusted template imports |
+| **NSWG-ECO-516** | HIGH | 4.17.15 | ≥4.17.19 | Allocation of resources without limits (ReDoS) |
+
+**Result:** `Total: 4 (HIGH: 4, CRITICAL: 0)` — and `Error: Process completed with exit code 1`, which blocks the pipeline.
+
+### Why This Matters — "Shift Left" Security
+
+This demonstration captures the core DevSecOps principle: **security decisions should happen before code reaches production.**
+
+Because the scan runs on every push and PR, the deliberate vulnerability was caught at the **earliest possible moment** — not in production, not in a security review weeks later, but within seconds of opening the PR. The failing check then blocks the merge, forcing remediation before the code can land on `main`.
+
+**Remediation** (the fix a developer would take): update the version constraint to `"lodash": "^4.17.21"` and run `npm install` to update the lockfile. The next CI run passes cleanly.
